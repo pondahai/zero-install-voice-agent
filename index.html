@@ -331,6 +331,17 @@ function loadVoices() {
 speechSynthesis.onvoiceschanged = loadVoices;
 loadVoices();
 
+let ttsUnlocked = false;
+function unlockTTS() {
+  // iOS 要求 speak() 至少在一次使用者手勢中被呼叫過，之後的自動朗讀才有聲音
+  if (ttsUnlocked) return;
+  const u = new SpeechSynthesisUtterance(" ");
+  u.volume = 0;
+  speechSynthesis.speak(u);
+  ttsUnlocked = true;
+  dbg("🔓 TTS 已解鎖（iOS 手勢需求）");
+}
+
 function speak(text) {
   text = text.trim();
   if (!text || !active) return; // 已停止就丟棄殘留的朗讀請求，避免自迴圈
@@ -339,6 +350,7 @@ function speak(text) {
   const voices = speechSynthesis.getVoices();
   const v = voices[$("voiceSel").value];
   if (v) { u.voice = v; u.lang = v.lang; }
+  else u.lang = "zh-TW"; // iOS 語音清單載入較晚，至少指定語言讓系統挑預設中文語音
   pendingUtterances++;
   dbg("🔈 TTS 播放: " + text.slice(0, 30));
   u.onend = u.onerror = () => {
@@ -533,6 +545,7 @@ $("toggle").onclick = async () => {
     showError("此瀏覽器不支援 Web Speech API，請使用 Chrome / Edge");
     return;
   }
+  unlockTTS(); // 必須在使用者手勢中呼叫（iOS）
   if (!(await initMic())) return; // 先確認麥克風權限，並啟動音量條
   ensureBargeVad(); // 背景預載 VAD 模型，第一次打斷才不會慢
   active = true;
