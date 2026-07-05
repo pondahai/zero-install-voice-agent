@@ -35,7 +35,7 @@ Chrome 網頁（嘴巴+耳朵）                 server.py（大腦，純 Python
 
 ## 快速開始
 
-需求：Windows 10/11、Chrome、Python 3.8+、一個 OpenAI 相容的 LLM 端點。
+需求：Windows / Linux / macOS、Chrome（或 Chromium）、Python 3.8+、一個 OpenAI 相容的 LLM 端點。
 
 ```powershell
 python server.py
@@ -47,9 +47,39 @@ python server.py
 
 - 必須用**真正的 Chrome/Edge** 開（IDE 內嵌瀏覽器拿不到麥克風權限）。
 - `localhost` 是安全來源，不需要 HTTPS。
-- Chrome 的語音辨識固定使用 **Windows 預設錄音裝置**；用音量條和裝置選單找出有訊號的麥克風後，到 Windows 設定把它設為預設。
+- Chrome 的語音辨識固定使用**系統預設錄音裝置**；用音量條和裝置選單找出有訊號的麥克風後，到系統設定把它設為預設。
 - LLM 端建議開啟工具解析（vLLM 範例：`--enable-auto-tool-choice --tool-call-parser hermes`）。
 - 若使用 Qwen3 系列，server 會自動要求關閉思考模式並過濾 `<think>` 區塊。
+
+## 部署在遠端主機（例如 GPU 主機 + Tailscale）
+
+server 是跨平台的（Windows / Linux / macOS），工具會自動切換：`run_command` 在
+Windows 用 PowerShell、其他系統用 bash；`open_app` 用 start / xdg-open / open；
+Chrome 路徑自動偵測（Linux 認得 google-chrome / chromium）。
+
+把 server 跑在和 LLM 同一台主機（例如 NVIDIA DGX Spark），任何裝置——**包括手機的
+Chrome**——都能透過瀏覽器連進來語音對話：
+
+```bash
+# 在遠端主機上
+git clone https://github.com/pondahai/zero-install-voice-agent
+cd zero-install-voice-agent
+python3 server.py                 # LLM 在同一台時 config 用 http://localhost:8002 即可
+
+# 麥克風需要安全來源（HTTPS），用 Tailscale 內建的 HTTPS 代理最省事：
+tailscale serve --bg 8010         # 需在 Tailscale 管理頁開啟 MagicDNS 與 HTTPS
+```
+
+然後從任何在 tailnet 裡的裝置開 `https://<主機名>.<你的tailnet>.ts.net` 即可。
+
+注意兩點：
+
+- **工具跟著 server 走**：`run_command` / `find_files` / `open_app` 操作的是遠端主機，
+  不是你手上的裝置。適合「查資料、問問題、累積技能」的用法。
+- 直接用 `http://100.x.x.x:8010` 開頁面會因為不是安全來源而**無法使用麥克風**，
+  一定要走 HTTPS（或在該裝置上用 SSH 轉發成 localhost）。
+- 綁定位址與端口可用環境變數覆寫：`HOST=0.0.0.0 PORT=9000 python3 server.py`
+  （搭配 tailscale serve 時維持預設 127.0.0.1 最安全）。
 
 ## 教它技能
 

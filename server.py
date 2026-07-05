@@ -10,15 +10,23 @@ import http.server
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-PORT = 8010
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8010"))
 MAX_ROUNDS = 8
+
+IS_WIN = os.name == "nt"
+IS_MAC = sys.platform == "darwin"
+OS_DESC = "Windows 電腦" if IS_WIN else ("macOS 主機" if IS_MAC else "Linux 主機")
+SHELL_NAME = "PowerShell" if IS_WIN else "bash"
 
 # ---------------------------------------------------------------- config
 
@@ -50,20 +58,34 @@ def llm_headers():
         h["Authorization"] = "Bearer " + CONFIG["api_key"]
     return h
 
-CHROME_CANDIDATES = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-]
-CHROME = next((p for p in CHROME_CANDIDATES if os.path.exists(p)), None)
+def find_chrome():
+    if IS_WIN:
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+        return next((p for p in candidates if os.path.exists(p)), None)
+    if IS_MAC:
+        p = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        if os.path.exists(p):
+            return p
+    for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium"):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
+CHROME = find_chrome()
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
 
 SYSTEM_PROMPT = (
-    "你是一個跑在使用者 Windows 電腦上的語音助理 agent，你的回覆會被文字轉語音朗讀出來。"
+    f"你是一個跑在使用者{OS_DESC}上的語音助理 agent，你的回覆會被文字轉語音朗讀出來。"
     "請用台灣繁體中文、口語化的方式回答，簡短扼要，不要使用 markdown、條列符號、表情符號或特殊格式。"
     "你有以下工具：web_search 搜尋網路、web_fetch 讀取網頁內容、open_app 開啟程式或檔案或網址、"
-    "run_command 執行 PowerShell 指令、find_files 尋找檔案。"
+    f"run_command 執行 {SHELL_NAME} 指令、find_files 尋找檔案。"
     "遇到需要即時資訊或你不確定的事實，先用 web_search；需要細節再用 web_fetch 讀結果網頁。"
     "執行完動作後用一句話回報結果。朗讀網址沒有意義，不要把網址唸出來，描述來源名稱即可。"
     "\n\n關於技能（skills）：技能是你累積的做事方法。開始做一件事之前，先看下面的技能清單，"
@@ -210,16 +232,22 @@ def tool_web_fetch(url):
 
 
 def tool_open_app(target):
-    # cmd start 會解析程式名/檔案路徑/網址三種目標
-    subprocess.Popen(f'start "" "{target}"', shell=True)
+    if IS_WIN:
+        # cmd start 會解析程式名/檔案路徑/網址三種目標
+        subprocess.Popen(f'start "" "{target}"', shell=True)
+    elif IS_MAC:
+        subprocess.Popen(["open", target])
+    else:
+        subprocess.Popen(["xdg-open", target],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return f"已嘗試開啟: {target}"
 
 
 def tool_run_command(command):
+    shell_cmd = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+                 if IS_WIN else ["bash", "-c", command])
     try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, timeout=60)
+        r = subprocess.run(shell_cmd, capture_output=True, timeout=60)
     except subprocess.TimeoutExpired:
         return "指令執行超過 60 秒，已中止"
 
@@ -286,9 +314,9 @@ TOOLS_SCHEMA = [
             "required": ["target"]}}},
     {"type": "function", "function": {
         "name": "run_command",
-        "description": "在使用者的電腦上執行 PowerShell 指令並回傳輸出，60 秒逾時",
+        "description": f"在這台{OS_DESC}上執行 {SHELL_NAME} 指令並回傳輸出，60 秒逾時",
         "parameters": {"type": "object", "properties": {
-            "command": {"type": "string", "description": "PowerShell 指令"}},
+            "command": {"type": "string", "description": f"{SHELL_NAME} 指令"}},
             "required": ["command"]}}},
     {"type": "function", "function": {
         "name": "save_skill",
@@ -503,6 +531,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     handler = functools.partial(Handler, directory=here)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), handler)
-    print(f"Voice agent: http://localhost:{PORT}  (LLM -> {CONFIG['upstream']}, chrome={'yes' if CHROME else 'no'})")
+    server = http.server.ThreadingHTTPServer((HOST, PORT), handler)
+    print(f"Voice agent: http://{HOST}:{PORT}  (os={OS_DESC}, LLM -> {CONFIG['upstream']}, "
+          f"chrome={'yes' if CHROME else 'no'})")
+    print("提醒: 麥克風需要安全來源。遠端存取請用 tailscale serve 或反向代理提供 HTTPS。")
     server.serve_forever()
