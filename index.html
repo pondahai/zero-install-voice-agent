@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>語音對話</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+    max-width: 720px; margin: 0 auto; padding: 16px;
+    background: #f5f5f7; color: #1c1c1e;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1c1c1e; color: #f2f2f7; }
+    .msg.assistant { background: #2c2c2e !important; }
+    .bar { background: #2c2c2e !important; }
+  }
+  h1 { font-size: 18px; margin: 8px 0; }
+  .bar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: #fff; border-radius: 12px; padding: 12px;
+    position: sticky; top: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  button#toggle {
+    font-size: 16px; padding: 10px 22px; border: none; border-radius: 24px;
+    cursor: pointer; background: #34c759; color: #fff; font-weight: 600;
+  }
+  button#toggle.on { background: #ff3b30; }
+  #status { font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: #8e8e93; display: inline-block; }
+  #dot.listening { background: #34c759; animation: pulse 1.2s infinite; }
+  #dot.thinking  { background: #ff9500; animation: pulse .8s infinite; }
+  #dot.speaking  { background: #007aff; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  select { padding: 6px; border-radius: 8px; max-width: 260px; font-size: 13px; }
+  #log { margin: 16px 0 80px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; line-height: 1.6; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #007aff; color: #fff; }
+  .msg.assistant { align-self: flex-start; background: #fff; }
+  .msg.partial { opacity: .55; font-style: italic; }
+  #err { color: #ff3b30; font-size: 13px; width: 100%; }
+  #meterWrap { width: 120px; height: 10px; background: rgba(128,128,128,.25); border-radius: 5px; overflow: hidden; }
+  #meter { height: 100%; width: 0%; background: #34c759; }
+  #cfgBtn { background: none; border: none; font-size: 18px; cursor: pointer; padding: 4px; }
+  #cfgPanel { display: none; background: #fff; border-radius: 12px; padding: 14px; margin-top: 10px;
+              box-shadow: 0 2px 8px rgba(0,0,0,.08); font-size: 13px; }
+  #cfgPanel label { display: block; margin-bottom: 8px; }
+  #cfgPanel input { width: 100%; padding: 6px 8px; border: 1px solid #d1d1d6; border-radius: 8px;
+                    box-sizing: border-box; margin-top: 3px; font-size: 13px; }
+  #cfgPanel button { padding: 8px 16px; border: none; border-radius: 8px; background: #007aff;
+                     color: #fff; cursor: pointer; font-size: 13px; }
+  @media (prefers-color-scheme: dark) {
+    #cfgPanel { background: #2c2c2e; }
+    #cfgPanel input { background: #1c1c1e; color: #f2f2f7; border-color: #48484a; }
+  }
+  #dbgWrap { margin-top: 10px; font-size: 12px; color: #8e8e93; }
+  #debug { max-height: 180px; overflow-y: auto; background: rgba(128,128,128,.12); padding: 8px; border-radius: 8px; white-space: pre-wrap; margin: 4px 0 0; font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+<h1>🎙️ 語音對話 <small id="model" style="font-weight:normal;font-size:12px;color:#8e8e93"></small></h1>
+<div class="bar">
+  <button id="toggle">開始對話</button>
+  <span id="status"><span id="dot"></span><span id="statusText">待機</span></span>
+  <select id="micSel" title="音量條監聽的麥克風（語音辨識固定用 Windows 預設裝置）"></select>
+  <span id="meterWrap" title="麥克風音量"><span id="meter" style="display:block"></span></span>
+  <label style="font-size:12px;color:#8e8e93" title="語音打斷靈敏度：往左靈敏（容易被打斷，喇叭外放可能誤觸），往右遲鈍（要大聲才打斷）">
+    ✋<input id="vadSense" type="range" min="0.55" max="0.95" step="0.05" value="0.75" style="width:70px;vertical-align:middle"></label>
+  <select id="voiceSel" title="TTS 語音"></select>
+  <button id="cfgBtn" title="LLM 設定">⚙️</button>
+  <span id="err"></span>
+</div>
+<div id="cfgPanel">
+  <label>LLM 位址（OpenAI 相容 API，不含 /v1）
+    <input id="cfgUpstream" placeholder="http://localhost:8002 或 Tailscale 位址"></label>
+  <div style="color:#8e8e93; margin: -4px 0 10px; line-height:1.5">
+    💡 100.x.x.x 開頭的位址走 <b>Tailscale</b> 私有網路：這台電腦的 Tailscale 必須在執行中且已登入，
+    Spark 主機也要在線上，才連得到。連不上時先檢查工作列的 Tailscale 圖示是否為已連線狀態。
+  </div>
+  <label>API Key（選填）
+    <input id="cfgKey" type="password" placeholder="留空表示不需要"></label>
+  <label>模型名稱（選填，留空自動偵測第一個模型）
+    <input id="cfgModel" placeholder="自動偵測"></label>
+  <button id="cfgSave">儲存並測試連線</button>
+  <span id="cfgMsg"></span>
+</div>
+<details id="dbgWrap" open><summary>事件記錄（除錯用）</summary><pre id="debug"></pre></details>
+<div id="log"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+let active = false;          // 對話開關
+let state = "idle";          // idle | listening | thinking | speaking
+let recognition = null;
+let pendingUtterances = 0;
+let streamDone = true;
+let currentAbort = null;   // 進行中的 agent 串流，停止時要真正中止
+
+function setState(s, text) {
+  state = s;
+  $("dot").className = s === "idle" ? "" : s;
+  $("statusText").textContent = text;
+}
+let stickToBottom = true; // 使用者往上捲時暫停自動捲動，捲回底部附近就恢復
+window.addEventListener("scroll", () => {
+  stickToBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+});
+function autoScroll() {
+  if (stickToBottom) window.scrollTo({ top: document.body.scrollHeight });
+}
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  $("log").appendChild(div);
+  autoScroll();
+  return div;
+}
+function showError(msg) { $("err").textContent = msg; if (msg) console.warn(msg); }
+function dbg(msg) {
+  const t = new Date().toLocaleTimeString("en-GB") + "." + String(Date.now() % 1000).padStart(3, "0");
+  const el = $("debug");
+  el.textContent = `[${t}] ${msg}\n` + el.textContent.split("\n").slice(0, 80).join("\n");
+}
+
+/* ---------- 麥克風選擇 + 音量條 + 提示音 ---------- */
+let audioCtx = null, micStream = null, meterRAF = 0;
+
+async function openMicStream(deviceId) {
+  cancelAnimationFrame(meterRAF);
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
+  micStream = await navigator.mediaDevices.getUserMedia(constraints);
+  const label = micStream.getAudioTracks()[0]?.label || "(未知裝置)";
+  dbg("🎙️ 音量條監聽中: " + label);
+  audioCtx = audioCtx || new AudioContext();
+  if (audioCtx.state === "suspended") await audioCtx.resume();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  audioCtx.createMediaStreamSource(micStream).connect(analyser);
+  const buf = new Uint8Array(analyser.fftSize);
+  (function loop() {
+    analyser.getByteTimeDomainData(buf);
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] - 128));
+    $("meter").style.width = Math.min(100, peak * 1.6) + "%";
+    $("meter").style.background = peak > 12 ? "#34c759" : "#8e8e93";
+    peakHist.push({ t: performance.now(), p: peak }); // 給打斷的音量二次驗證用
+    while (peakHist.length && performance.now() - peakHist[0].t > 1000) peakHist.shift();
+    meterRAF = requestAnimationFrame(loop);
+  })();
+}
+
+let peakHist = [];
+function recentEnergyOK() {
+  // 打斷的二次驗證：最近 600ms 內要有 40% 以上的時間音量夠大（門檻由滑桿控制）
+  const now = performance.now();
+  const th = 15 + (parseFloat($("vadSense").value) - 0.55) * 75; // 0.55→15, 0.95→45
+  const recent = peakHist.filter(s => now - s.t < 600);
+  if (recent.length < 5) return true;
+  const loud = recent.filter(s => s.p > th).length;
+  return loud / recent.length >= 0.4;
+}
+
+async function loadMics() {
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const sel = $("micSel");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  const defOpt = document.createElement("option");
+  defOpt.value = "";
+  defOpt.textContent = "🎙️ 系統預設麥克風";
+  sel.appendChild(defOpt);
+  devs.filter(d => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default")
+      .forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d.deviceId;
+        opt.textContent = "🎙️ " + (d.label || "麥克風 " + d.deviceId.slice(0, 6));
+        sel.appendChild(opt);
+      });
+  sel.value = prev;
+  if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+}
+
+async function initMic() {
+  if (micStream) return true;
+  try {
+    await openMicStream($("micSel").value || null);
+    dbg("✅ 已取得麥克風權限");
+  } catch (e) {
+    dbg("❌ 取得麥克風失敗: " + e.name);
+    showError("無法取得麥克風（" + e.name + "），請點網址列左側圖示允許麥克風後重新整理");
+    return false;
+  }
+  await loadMics(); // 拿到權限後才讀得到裝置名稱
+  return true;
+}
+
+$("micSel").onchange = async () => {
+  bargeVadStale = true; // 換裝置後 VAD 需要重建
+  if (!micStream) return; // 尚未開始，等按開始時一併套用
+  try {
+    await openMicStream($("micSel").value || null);
+  } catch (e) {
+    dbg("❌ 切換麥克風失敗: " + e.name);
+    showError("切換麥克風失敗: " + e.name);
+  }
+};
+
+/* ---------- 語音打斷 (Silero VAD, 回覆播放期間監聽插話) ---------- */
+let bargeVad = null;
+let bargeVadStale = false;
+let bargeVadRunning = false;
+let bargeTimer = null;
+
+function vadDeviceConstraints() {
+  // autoGainControl 關閉：AGC 會把呼吸聲、環境音放大到觸發 VAD
+  const c = { echoCancellation: true, noiseSuppression: true, autoGainControl: false };
+  const id = $("micSel").value;
+  if (id) c.deviceId = { exact: id };
+  return c;
+}
+
+async function ensureBargeVad() {
+  if (typeof vad === "undefined") { dbg("⚠️ VAD 函式庫未載入（CDN 連不上？），語音打斷停用"); return null; }
+  if (bargeVad && !bargeVadStale) return bargeVad;
+  if (bargeVad) {
+    try { bargeVad.destroy ? bargeVad.destroy() : bargeVad.pause(); } catch {}
+    bargeVad = null;
+  }
+  const sense = parseFloat($("vadSense").value);
+  try {
+    bargeVad = await vad.MicVAD.new({
+      positiveSpeechThreshold: sense,
+      negativeSpeechThreshold: Math.max(0.2, sense - 0.15),
+      minSpeechFrames: 5,          // ~0.5 秒以上才算真的說話
+      redemptionFrames: 5,
+      preSpeechPadFrames: 1,
+      additionalAudioConstraints: vadDeviceConstraints(),
+      onSpeechStart: () => {
+        if (!active || state !== "speaking") return;
+        // 持續 500ms 才進入判定，doBargeIn 內還有音量二次驗證
+        clearTimeout(bargeTimer);
+        bargeTimer = setTimeout(doBargeIn, 500);
+      },
+      onVADMisfire: () => { clearTimeout(bargeTimer); bargeTimer = null; },
+      onSpeechEnd: () => {
+        // 短但完整的話（例如「停」）：計時器還沒到就提前判定
+        if (bargeTimer) { clearTimeout(bargeTimer); doBargeIn(); }
+      },
+    });
+    bargeVadStale = false;
+    dbg("✋ 語音打斷就緒（靈敏度 " + sense + "）");
+  } catch (e) {
+    dbg("⚠️ VAD 初始化失敗: " + e.message + "，語音打斷停用");
+    bargeVad = null;
+  }
+  return bargeVad;
+}
+
+async function startBargeVad() {
+  const v = await ensureBargeVad();
+  if (v && !bargeVadRunning && active && state === "speaking") {
+    v.start();
+    bargeVadRunning = true;
+  }
+}
+
+function pauseBargeVad() {
+  clearTimeout(bargeTimer);
+  bargeTimer = null;
+  if (bargeVad && bargeVadRunning) {
+    try { bargeVad.pause(); } catch {}
+    bargeVadRunning = false;
+  }
+}
+
+function doBargeIn() {
+  bargeTimer = null;
+  if (!active || state !== "speaking") return;
+  if (!recentEnergyOK()) {
+    dbg("✋ 疑似誤觸（音量不足），忽略。太遲鈍就把滑桿往左調");
+    return;
+  }
+  dbg("✋ 偵測到插話，停止回覆");
+  pauseBargeVad();
+  if (currentAbort) { currentAbort.abort(); currentAbort = null; }
+  speechSynthesis.cancel();
+  pendingUtterances = 0;
+  streamDone = true;
+  startListening();
+}
+
+$("vadSense").onchange = () => {
+  bargeVadStale = true; // 下次進入回覆播放時用新靈敏度重建
+  dbg("✋ 打斷靈敏度調整為 " + $("vadSense").value);
+};
+function beep(freq, dur = 0.12) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.frequency.value = freq;
+  gain.gain.value = 0.08;
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + dur);
+}
+
+/* ---------- TTS (瀏覽器內建，底層是 Windows 本機語音) ---------- */
+function loadVoices() {
+  const voices = speechSynthesis.getVoices();
+  if (!voices.length) return;
+  const sel = $("voiceSel");
+  sel.innerHTML = "";
+  voices.forEach((v, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = `${v.name} (${v.lang})`;
+    sel.appendChild(opt);
+  });
+  // 優先挑台灣中文，其次任何中文
+  let best = voices.findIndex(v => /zh[-_]TW/i.test(v.lang));
+  if (best < 0) best = voices.findIndex(v => /^zh/i.test(v.lang));
+  if (best >= 0) sel.value = best;
+}
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+function speak(text) {
+  text = text.trim();
+  if (!text || !active) return; // 已停止就丟棄殘留的朗讀請求，避免自迴圈
+  if (state === "listening") { dbg("🚫 聆聽中，略過朗讀: " + text.slice(0, 20)); return; }
+  const u = new SpeechSynthesisUtterance(text);
+  const voices = speechSynthesis.getVoices();
+  const v = voices[$("voiceSel").value];
+  if (v) { u.voice = v; u.lang = v.lang; }
+  pendingUtterances++;
+  dbg("🔈 TTS 播放: " + text.slice(0, 30));
+  u.onend = u.onerror = () => {
+    pendingUtterances = Math.max(0, pendingUtterances - 1);
+    maybeFinishTurn();
+  };
+  setState("speaking", "回覆中…（開口說話可打斷）");
+  startBargeVad(); // 播放期間監聽插話
+  speechSynthesis.speak(u);
+}
+function maybeFinishTurn() {
+  // 串流結束且所有句子唸完 -> 緩衝一下再回到聆聽（避免聽到喇叭尾音）
+  if (streamDone && pendingUtterances <= 0 && active) {
+    setTimeout(() => {
+      if (streamDone && pendingUtterances <= 0 && active && state !== "listening") {
+        pauseBargeVad();
+        startListening();
+      }
+    }, 400);
+  }
+}
+
+/* ---------- STT (Chrome Web Speech API) ---------- */
+let networkErrCount = 0;
+function startListening() {
+  if (!active) return;
+  pauseBargeVad(); // 聆聽交給語音辨識，VAD 只在回覆播放時工作
+  setState("listening", "聆聽中…請說話");
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.lang = "zh-TW";
+  recognition.interimResults = true;
+  recognition.continuous = false; // 停頓即視為一輪結束（turn-taking）
+  let finalText = "";
+  let partialDiv = null;
+
+  recognition.onstart = () => { dbg("🎤 辨識啟動，開始聆聽"); beep(880); };
+  recognition.onaudiostart = () => dbg("🔊 收到音訊輸入");
+  recognition.onspeechstart = () => dbg("🗣️ 偵測到說話開始");
+  recognition.onspeechend = () => dbg("🤫 偵測到說話結束");
+
+  recognition.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    const shown = finalText + interim;
+    if (shown) {
+      networkErrCount = 0;
+      dbg("📝 辨識結果: " + shown);
+      if (!partialDiv) partialDiv = addMsg("user partial", "");
+      partialDiv.textContent = shown; // 即時 partial transcript
+      autoScroll();
+    }
+  };
+  recognition.onerror = (e) => {
+    if (e.error === "aborted") return; // 按停止造成的中斷，不是真錯誤
+    dbg("⚠️ 辨識錯誤: " + e.error + (e.message ? " (" + e.message + ")" : ""));
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      showError("麥克風權限被拒絕，請允許後重試");
+      stopAll();
+    } else if (e.error === "network") {
+      if (++networkErrCount >= 3) {
+        showError("Chrome 語音辨識連不上 Google 服務（network 錯誤）。請確認此電腦能連外網，或代理/防火牆是否擋住 Google。");
+        stopAll();
+      }
+    } else if (e.error !== "no-speech" && e.error !== "aborted") {
+      showError("語音辨識錯誤: " + e.error);
+    }
+  };
+  recognition.onend = () => {
+    dbg("⏹️ 辨識結束" + (finalText.trim() ? "，送出: " + finalText.trim() : "（無內容，重新聆聽）"));
+    if (!active) return;
+    if (finalText.trim()) {
+      if (partialDiv) { partialDiv.className = "msg user"; partialDiv.textContent = finalText.trim(); }
+      beep(660);
+      sendTurn(finalText.trim());
+    } else {
+      if (partialDiv) partialDiv.remove();
+      setTimeout(() => { if (active && state === "listening") startListening(); }, 300);
+    }
+  };
+  recognition.start();
+}
+
+/* ---------- Agent (server 端工具迴圈，串流 + 分句丟給 TTS) ---------- */
+async function sendTurn(userText) {
+  recognition = null;
+  setState("thinking", "思考中…");
+  dbg("🧠 送給 agent…");
+  streamDone = false;
+
+  const assistantDiv = addMsg("assistant", "…");
+  let raw = "";          // 模型原始輸出（可能含 <think>）
+  let spokenLen = 0;     // 已送進分句器的長度
+  let sentenceBuf = "";  // 分句緩衝
+
+  const stripThink = s => s.replace(/<think>[\s\S]*?(<\/think>|$)/g, "").replace(/^\s+/, "");
+
+  function feedTTS(finish) {
+    const visible = stripThink(raw);
+    if (visible.length > spokenLen) {
+      sentenceBuf += visible.slice(spokenLen);
+      spokenLen = visible.length;
+    }
+    // 以句末標點切句，逐句送 TTS
+    let m;
+    while ((m = sentenceBuf.match(/[^。！？!?；;\n]*[。！？!?；;\n]+/))) {
+      speak(m[0]);
+      sentenceBuf = sentenceBuf.slice(m[0].length);
+    }
+    if (finish && sentenceBuf.trim()) { speak(sentenceBuf); sentenceBuf = ""; }
+    assistantDiv.textContent = (visible || "…");
+    autoScroll();
+  }
+
+  try {
+    currentAbort = new AbortController();
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: userText }),
+      signal: currentAbort.signal,
+    });
+    if (!resp.ok) throw new Error("agent 回應 " + resp.status + ": " + (await resp.text()).slice(0, 200));
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let lineBuf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      lineBuf += decoder.decode(value, { stream: true });
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5)); } catch { continue; }
+        if (ev.type === "delta" && ev.text) {
+          raw += ev.text;
+          feedTTS(false);
+        } else if (ev.type === "tool") {
+          dbg("🔧 使用工具: " + ev.name + " " + JSON.stringify(ev.args).slice(0, 120));
+          setState("thinking", "使用工具: " + ev.name + "…");
+        } else if (ev.type === "tool_done") {
+          dbg("✅ " + ev.name + " 完成: " + ev.summary);
+          setState("thinking", "思考中…");
+        } else if (ev.type === "error") {
+          throw new Error(ev.message);
+        }
+      }
+    }
+    feedTTS(true);
+    assistantDiv.textContent = stripThink(raw).trim() || "(無回應)";
+    showError("");
+  } catch (err) {
+    if (err.name === "AbortError") {
+      assistantDiv.textContent = stripThink(raw).trim() + "（已中止）";
+      dbg("🛑 串流已中止");
+    } else {
+      assistantDiv.textContent = "❌ " + err.message;
+      showError("agent 錯誤，請確認 server.py 與 LLM 服務狀態");
+      dbg("❌ agent 錯誤: " + err.message);
+    }
+  }
+  currentAbort = null;
+  streamDone = true;
+  maybeFinishTurn();
+}
+
+/* ---------- 開關 ---------- */
+function stopAll() {
+  active = false;
+  if (currentAbort) { currentAbort.abort(); currentAbort = null; } // 中止進行中的 agent 串流
+  if (recognition) { recognition.onend = null; recognition.abort(); recognition = null; }
+  pauseBargeVad();
+  speechSynthesis.cancel();
+  pendingUtterances = 0;
+  cancelAnimationFrame(meterRAF);
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  $("meter").style.width = "0%";
+  $("toggle").textContent = "開始對話";
+  $("toggle").classList.remove("on");
+  setState("idle", "待機");
+  dbg("⏸️ 已停止");
+}
+$("toggle").onclick = async () => {
+  if (active) { stopAll(); return; }
+  if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+    showError("此瀏覽器不支援 Web Speech API，請使用 Chrome / Edge");
+    return;
+  }
+  if (!(await initMic())) return; // 先確認麥克風權限，並啟動音量條
+  ensureBargeVad(); // 背景預載 VAD 模型，第一次打斷才不會慢
+  active = true;
+  networkErrCount = 0;
+  $("toggle").textContent = "停止";
+  $("toggle").classList.add("on");
+  showError("");
+  startListening();
+};
+
+/* ---------- LLM 設定面板 ---------- */
+$("cfgBtn").onclick = async () => {
+  const p = $("cfgPanel");
+  if (p.style.display === "block") { p.style.display = "none"; return; }
+  try {
+    const c = await (await fetch("/api/config")).json();
+    $("cfgUpstream").value = c.upstream;
+    $("cfgModel").value = c.model;
+    $("cfgKey").value = "";
+    $("cfgKey").placeholder = c.has_key ? "已設定（輸入新值可更換，留空保留原值）" : "留空表示不需要";
+  } catch { /* server 沒回應也還是打開面板 */ }
+  $("cfgMsg").textContent = "";
+  p.style.display = "block";
+};
+$("cfgSave").onclick = async () => {
+  const body = { upstream: $("cfgUpstream").value.trim(), model: $("cfgModel").value.trim() };
+  if ($("cfgKey").value.trim()) body.api_key = $("cfgKey").value.trim();
+  $("cfgMsg").textContent = "測試連線中…";
+  try {
+    const r = await (await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })).json();
+    if (r.ok) {
+      $("cfgMsg").textContent = "✅ 已連線，模型: " + r.model;
+      $("model").textContent = r.model;
+      dbg("⚙️ LLM 設定已更新: " + body.upstream + " / " + r.model);
+    } else {
+      let msg = "❌ 連線失敗: " + r.error;
+      if (/^https?:\/\/100\./.test(body.upstream)) {
+        msg += "（這是 Tailscale 位址，請確認本機 Tailscale 已連線、Spark 主機在線上）";
+      }
+      $("cfgMsg").textContent = msg;
+    }
+  } catch (e) {
+    $("cfgMsg").textContent = "❌ " + e.message;
+  }
+};
+
+/* ---------- 啟動時取得模型與工具資訊，並重置對話 ---------- */
+fetch("/api/models").then(r => r.json()).then(j => {
+  $("model").textContent = j.model + "｜工具: " + j.tools.join(", ") + (j.chrome ? "｜chrome✓" : "");
+  dbg("🤖 agent 就緒，模型 " + j.model + "，工具 " + j.tools.length + " 個");
+}).catch(() => {
+  showError("無法連到 LLM（/api/models 失敗），請確認 100.89.149.50:8002 可連線");
+});
+fetch("/api/reset", { method: "POST" }); // 重新整理頁面 = 開新對話
+</script>
+</body>
+</html>

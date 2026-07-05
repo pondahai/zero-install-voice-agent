@@ -1,0 +1,9 @@
+# 個人設定（含 LLM 位址與 API key）
+config.json
+
+# 個人累積的技能檔
+skills/
+
+# Python
+__pycache__/
+*.pyc
